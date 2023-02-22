@@ -21,9 +21,11 @@ function ProgressBar {
     printf "\rProgress : [${_fill// /#}${_empty// /-}] ${_progress}%%"
 }
 # Will accumulate results from the AQL batches
-OUTPUT_FILE="docker_images_sha.txt"
+OUTPUT_DIR="temp"
+OUTPUT_FILE="summary.json"
 # Clearing previous results
-echo "" > $OUTPUT_FILE
+mkdir -p ${OUTPUT_DIR}
+echo "" > ${OUTPUT_FILE}
 
 # Run a single batch. Params are starting index (inclusive), end index (exclusive) and the entire array of repository names.
 # Results will be written to OUTPUT_FILE
@@ -43,13 +45,10 @@ function RunBatch {
        AQL2="${AQL2}\"repo\":${_arr[i2]},"
    done 
    AQL2=`echo ${AQL2} | rev | cut -c2- | rev`
-   AQL3='}],"type":"file", "created":{"$last":"3mo"}, "name":"manifest.json" }).include("sha256")'
+   AQL3='}],"type":"file" }).include("sha256", "size")'
    AQL="$AQL1$AQL2$AQL3"
    #echo "AQL: ${AQL}"
-   RES=`$CLI rt curl -XPOST -H "Content-Type: text/plain" -d "$AQL" api/search/aql --silent`
-   #echo $RES
-   RES=`echo "$RES" | jq -r '.results[] | .sha256'`
-   echo ${RES} >> $OUTPUT_FILE
+   RES=`$CLI rt curl -o ${OUTPUT_DIR}/${_arr[i2]}.json -XPOST -H "Content-Type: text/plain" -d "$AQL" api/search/aql --silent`
 }
 
 min() {
@@ -68,14 +67,14 @@ do
 done
 
 # Retrieve all repositories of type Docker which are not Virtual
-REPOS=`$CLI rt curl /api/repositories --silent | jq '.[] | select(.packageType == "Docker" and .type != "VIRTUAL") | .key'`
+REPOS=`$CLI rt curl /api/repositories --silent | jq '.[] | select(.type != "REMOTE" and .type != "VIRTUAL") | .key'`
 if [[ "${REPOS}" == "" ]]; then
-        echo "No Docker repositories to scan"
+        echo "No repositories to scan"
         exit 0
 fi
 
 TOTAL=`echo "$REPOS" | wc -l |  cut -w -f 2`
-echo "Going through ${TOTAL} Docker repositories"
+echo "Going through ${TOTAL} repositories"
 
 #echo "$REPOS"
 # Convert the lines into an array
@@ -84,7 +83,7 @@ IFS=$'\n'      # Change IFS to newline char
 arr2=($REPOS)
 IFS=$SAVEIFS   # Restore original IFS
 
-BATCH_SIZE=122
+BATCH_SIZE=1
 BATCH_COUNT=$((TOTAL/BATCH_SIZE+1))
 #echo "TOTAL: ${TOTAL}"
 #echo "BATCH SIZE: ${BATCH_SIZE}"
@@ -98,7 +97,5 @@ do
         ProgressBar $i $((BATCH_COUNT-1))
         RunBatch $sPos $ePos "${arr2[@]}" 
 done
-# Now need just the unique count of the SHAs
-FINAL_RES=`cat $OUTPUT_FILE | tr ' ' '\n' | sort | uniq | wc -l | cut -w -f 2`
-echo
-echo "Docker images through last 3 months: ${FINAL_RES}"
+# jq  '.results | map(.size) | add // 0' r40.json
+jq -n '[inputs | {(input_filename | gsub(".*/|\"|\\.json$";"")): (.results | map(.size) | add // 0)}]' ${OUTPUT_DIR}/*.json > ${OUTPUT_FILE}
